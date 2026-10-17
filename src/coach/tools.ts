@@ -1,12 +1,10 @@
-// The coach's tools, ported from Pulse's src/server/coach/tools.ts: read-only, bound to this person's QueryCtx by
-// closure (the model never names a person or a store), each a compact digest of an existing screen query. A metric
-// without a value carries its reason code instead, so the model can say "calibrating" rather than guess. No chart
-// series, ids or raw payloads.
+// src/coach/tools.ts — Pulse Coach Tools + Full Nutrition, Hydration, Weight & Symptom Logging
 import { tool, type InferToolOutput } from "ai";
 import { z } from "zod";
+import { logEntry, logFoods } from "@/actions/log";
 import { trainingGuidance } from "@/core/algorithms/coaching";
 import type { Metric } from "@/lib/reasons";
-import { addDays, daysBetween } from "@/lib/time";
+import { addDays, daysBetween, localMidnight } from "@/lib/time";
 import { getActivities } from "@/queries/activities";
 import { costDigest } from "@/queries/activityCost";
 import { getActivity } from "@/queries/activity";
@@ -14,16 +12,18 @@ import { dayStartOf, firstDay, loadDays, maybe, meanSd, todayOf, type QueryCtx }
 import { acwrStatus, getFitness, getHealthHub, getMonitor, getStress } from "@/queries/health";
 import { energyBankVM, latestReport } from "@/queries/home";
 import { getJournalInsights } from "@/queries/journal";
+import { FLOWS, MEALS, MOODS, SYMPTOMS, VALENCES, type Flow, type Meal, type Mood, type Symptom, type Valence } from "@/queries/log";
+import { getNutrition } from "@/queries/nutrition";
 import { getRecovery } from "@/queries/recovery";
 import { getReport } from "@/queries/reports";
 import { getSleep } from "@/queries/sleep";
 import { getStrain } from "@/queries/strain";
 import { TREND_METRICS, type TrendMetricKey } from "@/queries/trends";
+import { readCustomTargets } from "@/state/nutrition";
 import { defaultTexts, type Texts } from "./texts";
 
 const round = (v: number, dp = 0) => Math.round(v * 10 ** dp) / 10 ** dp;
 
-/** A number metric as `{ value }` or `{ value: null, reason }`; provisional only when it is. */
 export function num(m: Metric<number>, dp = 0) {
   return { value: m.value === null ? null : round(m.value, dp), reason: m.value === null ? (m.reason ?? "no_data") : null, provisional: m.provisional, ...(m.nightsLeft !== undefined && { nightsLeft: m.nightsLeft }) };
 }
@@ -126,10 +126,57 @@ export async function dayDigest(ctx: QueryCtx, day: string) {
   };
 }
 
-/**
- * The tool set for this person. `t` gives each description (texts.ts). Parameter types and what each tool reads are
- * fixed here.
- */
+export async function nutritionDigest(ctx: QueryCtx) {
+  const custom = await readCustomTargets().catch(() => ({ kcal: null, protein: null, carbs: null, fat: null }));
+  const n = await getNutrition(ctx, custom);
+  const todayMidnight = localMidnight(n.today, ctx.timeZone);
+  const logged = await ctx.store.loggedEntries(todayMidnight, 5000);
+  const waterMl = logged
+    .filter((r) => r.day === n.today && r.type === "hydration-log")
+    .reduce((sum, r) => sum + (Number((r.data as { ml?: number })?.ml) || 0), 0);
+
+  return {
+    today: n.today,
+    totals: n.totals,
+    waterMl,
+    targets: {
+      kcal: n.targets.kcal.value,
+      protein: n.targets.protein.value,
+      carbs: n.targets.carbs.value,
+      fat: n.targets.fat.value,
+    },
+    remaining: {
+      kcal: Math.max(0, n.targets.kcal.value - (n.totals.kcal ?? 0)),
+      protein: Math.max(0, n.targets.protein.value - (n.totals.protein ?? 0)),
+      carbs: Math.max(0, n.targets.carbs.value - (n.totals.carbs ?? 0)),
+      fat: Math.max(0, n.targets.fat.value - (n.totals.fat ?? 0)),
+    },
+    meals: n.meals.map((mg) => ({
+      meal: mg.meal,
+      label: mg.label,
+      kcal: mg.kcal,
+      items: mg.items.map((i) => ({
+        id: i.id,
+        name: i.title,
+        portion: i.portion,
+        kcal: i.kcal,
+        protein: i.protein,
+        carbs: i.carbs,
+        fat: i.fat,
+        fiber: i.fiber,
+      })),
+    })),
+    weekAverage: n.week,
+    monthAverage: n.month,
+  };
+}
+
+const mealEnum = MEALS.map((m) => m[0]) as [Meal, ...Meal[]];
+const symptomEnum = SYMPTOMS.map((s) => s[0]) as [Symptom, ...Symptom[]];
+const moodEnum = MOODS.map((m) => m[0]) as [Mood, ...Mood[]];
+const valenceEnum = VALENCES.map((v) => v[0]) as [Valence, ...Valence[]];
+const flowEnum = FLOWS.map((f) => f[0]) as [Flow, ...Flow[]];
+
 export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
   return {
     get_day: tool({
@@ -162,7 +209,6 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
             distanceKm: i.distanceKm === null ? null : round(i.distanceKm, 1),
           })),
         );
-        // Mobile: stretches of raised HR with no workout recorded (estimates, never scored), and each kind's recovery cost.
         const detected = a.groups.flatMap((g) =>
           g.detected.map((d) => ({ day: g.day, likely: d.label, minutes: Math.round((d.end - d.start) / 60_000), avgHr: d.avgHr, strain: d.strain === null ? null : round(d.strain, 1) })),
         );
@@ -218,7 +264,6 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
       inputSchema: z.object({ day: Day(t("tool.get_health.day")) }),
       execute: async ({ day }) => {
         const d = await dayOf(ctx, day);
-        // The web's todayOf reads ctx.now; the phone's reads ctx.today, so the dated context moves both.
         const dated = { ...ctx, today: d, now: Math.min(ctx.now, dayStartOf(ctx, addDays(d, 1)) - 1) };
         const [mon, hub, fit] = await Promise.all([getMonitor(d, dated), getHealthHub(dated), getFitness(dated)]);
         return {
@@ -237,7 +282,6 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
       description: t("tool.get_report"),
       inputSchema: z.object({ kind: z.enum(["week", "month"]).default("week").describe(t("tool.get_report.kind")) }),
       execute: async ({ kind }) => {
-        // The web reads More's latestWeek / latestMonth, which are this same latestReport.
         const latest = await latestReport(ctx, kind);
         const r = latest && (await getReport(latest.period, ctx));
         if (!r) return { report: null, reason: "no_data" };
@@ -260,12 +304,74 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
       execute: async () => {
         const p = ctx.profile;
         const age = Math.floor((Date.parse(todayOf(ctx)) - Date.parse(p.birthDate)) / (365.2425 * 86_400_000));
-        return { age, sex: p.sex, maxHr: p.maxHr, timeZone: ctx.timeZone, firstDayWithData: await firstDay(ctx), today: todayOf(ctx), weekAgo: addDays(todayOf(ctx), -7) };
+        return { age, sex: p.sex, maxHr: p.maxHr, heightCm: p.heightCm, waistCm: p.waistCm ?? null, sleepGoalHours: p.sleepGoal?.hours ?? null, timeZone: ctx.timeZone, firstDayWithData: await firstDay(ctx), today: todayOf(ctx), weekAgo: addDays(todayOf(ctx), -7) };
+      },
+    }),
+    // ── NUEVAS HERRAMIENTAS DE NUTRICIÓN Y REGISTRO EN LA BASE DE DATOS LOCAL ──
+    get_nutrition: tool({
+      description: "Read today's logged meals, calorie and macro totals (protein, carbs, fat, fiber), hydration (waterMl), remaining daily targets, and 7/30-day nutrition averages. Always call this before giving nutrition advice or after logging food.",
+      inputSchema: z.object({}),
+      execute: async () => nutritionDigest(ctx),
+    }),
+    log_meal: tool({
+      description: "Log one or more foods into the user's Pulse nutrition log for today or a specified local time (YYYY-MM-DDTHH:mm). Estimate calories, protein, carbs, fat and fiber accurately when the user describes a meal.",
+      inputSchema: z.object({
+        meal: z.enum(mealEnum).describe("BREAKFAST, LUNCH, DINNER, or SNACK"),
+        at: z.string().optional().describe("Optional local time YYYY-MM-DDTHH:mm; omit for right now"),
+        items: z.array(
+          z.object({
+            name: z.string().min(1).max(80).describe("Food item name, max 80 chars"),
+            portion: z.string().max(60).optional().describe("Portion description, e.g. '200g' or '2 eggs'"),
+            kcal: z.number().int().min(0).max(10000).describe("Calories (whole number)"),
+            protein: z.number().min(0).max(1000).nullable().describe("Protein in grams"),
+            carbs: z.number().min(0).max(1000).nullable().describe("Carbohydrates in grams"),
+            fat: z.number().min(0).max(1000).nullable().describe("Fat in grams"),
+            fiber: z.number().min(0).max(1000).nullable().optional().describe("Fiber in grams"),
+          }),
+        ).min(1).max(20),
+      }),
+      execute: async ({ meal, at, items }) => {
+        const res = await logFoods({ store: ctx.store, timeZone: ctx.timeZone, profile: ctx.profile }, { meal, via: "text", at, items });
+        if (!res.ok) return { ok: false, error: res.error };
+        return { ok: true, loggedCount: res.data.count, updatedNutrition: await nutritionDigest(ctx) };
+      },
+    }),
+    log_entry: tool({
+      description: "Log water intake (ml), body weight (kg) and body fat (%), symptoms, mood, or menstrual period into the user's Pulse database.",
+      inputSchema: z.object({
+        kind: z.enum(["water", "weight", "symptoms", "mood", "period"]).describe("Type of entry to log"),
+        at: z.string().optional().describe("Optional local time YYYY-MM-DDTHH:mm; omit for now"),
+        ml: z.number().int().min(10).max(5000).optional().describe("Water in ml (when kind = water)"),
+        kg: z.number().min(20).max(300).optional().describe("Weight in kg (when kind = weight)"),
+        fatPct: z.number().min(2).max(75).nullable().optional().describe("Body fat % (when kind = weight)"),
+        symptoms: z.array(z.enum(symptomEnum)).optional().describe("Symptoms list (when kind = symptoms)"),
+        moods: z.array(z.enum(moodEnum)).optional().describe("Moods list (when kind = mood)"),
+        valence: z.enum(valenceEnum).nullable().optional().describe("Valence (when kind = mood)"),
+        periodStart: z.string().optional().describe("YYYY-MM-DD start (when kind = period)"),
+        periodEnd: z.string().optional().describe("YYYY-MM-DD end (when kind = period)"),
+        flow: z.enum(flowEnum).nullable().optional().describe("Flow (when kind = period)"),
+      }),
+      execute: async (input) => {
+        const actionCtx = { store: ctx.store, timeZone: ctx.timeZone, profile: ctx.profile };
+        let res;
+        if (input.kind === "water" && input.ml != null) {
+          res = await logEntry(actionCtx, { kind: "water", ml: input.ml, at: input.at });
+        } else if (input.kind === "weight" && input.kg != null) {
+          res = await logEntry(actionCtx, { kind: "weight", kg: input.kg, fatPct: input.fatPct ?? null, at: input.at });
+        } else if (input.kind === "symptoms" && input.symptoms?.length) {
+          res = await logEntry(actionCtx, { kind: "symptoms", symptoms: input.symptoms, at: input.at });
+        } else if (input.kind === "mood" && input.moods?.length) {
+          res = await logEntry(actionCtx, { kind: "mood", moods: input.moods, valence: input.valence ?? null, at: input.at });
+        } else if (input.kind === "period" && input.periodStart && input.periodEnd) {
+          res = await logEntry(actionCtx, { kind: "period", start: input.periodStart, end: input.periodEnd, flow: input.flow ?? null });
+        } else {
+          return { ok: false, error: "Missing required fields for the selected kind." };
+        }
+        return res;
       },
     }),
   };
 }
 
 export type CoachTools = ReturnType<typeof coachTools>;
-
 export type CoachOutputs = { [K in keyof CoachTools]: InferToolOutput<CoachTools[K]> };
