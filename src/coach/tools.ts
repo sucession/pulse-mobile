@@ -1,10 +1,12 @@
 // src/coach/tools.ts — Pulse Coach Tools + Full Nutrition, Hydration, Weight & Symptom Logging
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { tool, type InferToolOutput } from "ai";
 import { z } from "zod";
 import { logEntry, logFoods } from "@/actions/log";
 import { trainingGuidance } from "@/core/algorithms/coaching";
 import type { Metric } from "@/lib/reasons";
 import { addDays, daysBetween, localMidnight } from "@/lib/time";
+import { NO_CUSTOM, parseCustomTargets } from "@/nutrition/targets";
 import { getActivities } from "@/queries/activities";
 import { costDigest } from "@/queries/activityCost";
 import { getActivity } from "@/queries/activity";
@@ -19,7 +21,6 @@ import { getReport } from "@/queries/reports";
 import { getSleep } from "@/queries/sleep";
 import { getStrain } from "@/queries/strain";
 import { TREND_METRICS, type TrendMetricKey } from "@/queries/trends";
-import { readCustomTargets } from "@/state/nutrition";
 import { defaultTexts, type Texts } from "./texts";
 
 const round = (v: number, dp = 0) => Math.round(v * 10 ** dp) / 10 ** dp;
@@ -127,7 +128,8 @@ export async function dayDigest(ctx: QueryCtx, day: string) {
 }
 
 export async function nutritionDigest(ctx: QueryCtx) {
-  const custom = await readCustomTargets().catch(() => ({ kcal: null, protein: null, carbs: null, fat: null }));
+  const rawTargets = await AsyncStorage.getItem("pulse.nutrition.targets").catch(() => null);
+  const custom = rawTargets ? parseCustomTargets(rawTargets) : NO_CUSTOM;
   const n = await getNutrition(ctx, custom);
   const todayMidnight = localMidnight(n.today, ctx.timeZone);
   const logged = await ctx.store.loggedEntries(todayMidnight, 5000);
@@ -307,7 +309,6 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
         return { age, sex: p.sex, maxHr: p.maxHr, heightCm: p.heightCm, waistCm: p.waistCm ?? null, sleepGoalHours: p.sleepGoal?.hours ?? null, timeZone: ctx.timeZone, firstDayWithData: await firstDay(ctx), today: todayOf(ctx), weekAgo: addDays(todayOf(ctx), -7) };
       },
     }),
-    // ── NUEVAS HERRAMIENTAS DE NUTRICIÓN Y REGISTRO EN LA BASE DE DATOS LOCAL ──
     get_nutrition: tool({
       description: "Read today's logged meals, calorie and macro totals (protein, carbs, fat, fiber), hydration (waterMl), remaining daily targets, and 7/30-day nutrition averages. Always call this before giving nutrition advice or after logging food.",
       inputSchema: z.object({}),
@@ -353,21 +354,22 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
       }),
       execute: async (input) => {
         const actionCtx = { store: ctx.store, timeZone: ctx.timeZone, profile: ctx.profile };
-        let res;
         if (input.kind === "water" && input.ml != null) {
-          res = await logEntry(actionCtx, { kind: "water", ml: input.ml, at: input.at });
-        } else if (input.kind === "weight" && input.kg != null) {
-          res = await logEntry(actionCtx, { kind: "weight", kg: input.kg, fatPct: input.fatPct ?? null, at: input.at });
-        } else if (input.kind === "symptoms" && input.symptoms?.length) {
-          res = await logEntry(actionCtx, { kind: "symptoms", symptoms: input.symptoms, at: input.at });
-        } else if (input.kind === "mood" && input.moods?.length) {
-          res = await logEntry(actionCtx, { kind: "mood", moods: input.moods, valence: input.valence ?? null, at: input.at });
-        } else if (input.kind === "period" && input.periodStart && input.periodEnd) {
-          res = await logEntry(actionCtx, { kind: "period", start: input.periodStart, end: input.periodEnd, flow: input.flow ?? null });
-        } else {
-          return { ok: false, error: "Missing required fields for the selected kind." };
+          return logEntry(actionCtx, { kind: "water", ml: input.ml, at: input.at });
         }
-        return res;
+        if (input.kind === "weight" && input.kg != null) {
+          return logEntry(actionCtx, { kind: "weight", kg: input.kg, fatPct: input.fatPct ?? null, at: input.at });
+        }
+        if (input.kind === "symptoms" && input.symptoms?.length) {
+          return logEntry(actionCtx, { kind: "symptoms", symptoms: input.symptoms, at: input.at });
+        }
+        if (input.kind === "mood" && input.moods?.length) {
+          return logEntry(actionCtx, { kind: "mood", moods: input.moods, valence: input.valence ?? null, at: input.at });
+        }
+        if (input.kind === "period" && input.periodStart && input.periodEnd) {
+          return logEntry(actionCtx, { kind: "period", start: input.periodStart, end: input.periodEnd, flow: input.flow ?? null });
+        }
+        return { ok: false, error: "Missing required fields for the selected kind." };
       },
     }),
   };
