@@ -13,6 +13,10 @@ export const MARKERS_KEY = "pulse.notifications.markers";
 /** src/state/app.ts's key for the chosen source; read here, written only there. */
 export const SOURCE_KEY = "pulse.source";
 
+// CONFIGURA AQUÍ TU URL Y KEY REALES DE SUPABASE:
+const SUPABASE_URL = "https://jhqoeqatzqtjmeqnmdqk.supabase.co";
+const SUPABASE_KEY = "sb_publishable_WKnq0UF_JvfYQwfrpQqdDw_VgiUZKEK";
+
 export async function readMarkers(): Promise<Markers> {
   try {
     const raw = await AsyncStorage.getItem(MARKERS_KEY);
@@ -56,21 +60,51 @@ async function applyPlan(a: BedtimeAction): Promise<Partial<Markers> | null> {
 /** Sends what is due and returns it. `now` in unix seconds. */
 export async function notifyAfterRun(store: Store, timeZone: string, now = Math.floor(Date.now() / 1000)): Promise<Alert[]> {
   try {
+    const today = localDay(now, timeZone);
+    const [source, rows] = await Promise.all([
+      readSource(),
+      store.scoresIn({ from: addDays(today, -MONITOR_LOOKBACK_DAYS), to: today }),
+    ]);
+    const row = rows.find((r) => r.day === today) ?? null;
+
+    // 1. Sincronizar siempre hacia Supabase aunque las notificaciones locales estén apagadas
+    if (row && source === "health_connect" && SUPABASE_URL.startsWith("https://") && !SUPABASE_URL.includes("TU_PROYECTO")) {
+      const rAny = row as Record<string, any>;
+      void fetch(`${SUPABASE_URL}/rest/v1/daily_load?on_conflict=date`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Prefer": "resolution=merge-duplicates",
+        },
+        body: JSON.stringify({
+          date: today,
+          recovery: row.recovery?.value != null ? Math.round(row.recovery.value) : null,
+          sleep_performance: rAny.sleep?.performance?.value != null ? Math.round(rAny.sleep.performance.value) : null,
+          sleep_hours: rAny.sleep?.asleep_min != null ? Number((rAny.sleep.asleep_min / 60).toFixed(2)) : null,
+          strain: row.strain?.engine?.strain?.value != null ? Math.round(row.strain.engine.strain.value) : null,
+          hrv: rAny.sleep?.hrv_ms ?? null,
+          resting_hr: rAny.sleep?.rhr_bpm ?? null,
+          sri: rAny.sleep_regularity?.sri != null ? Math.round(rAny.sleep_regularity.sri) : null,
+        }),
+      }).catch(() => {});
+    }
+
+    // 2. Evaluar notificaciones locales del teléfono
     const settings = await readSettings();
     if (!anyAlert(settings)) {
       await cancelBedtime();
       return [];
     }
     if ((await notificationPermission()) !== "granted") return [];
-    const today = localDay(now, timeZone);
-    const [source, markers, sync, rows, reports] = await Promise.all([
-      readSource(),
+
+    const [markers, sync, reports] = await Promise.all([
       readMarkers(),
       store.getSyncState(),
-      store.scoresIn({ from: addDays(today, -MONITOR_LOOKBACK_DAYS), to: today }),
       settings.weeklyReport ? store.getReports() : Promise.resolve([]),
     ]);
-    const row = rows.find((r) => r.day === today) ?? null;
+
     const due = [
       ...decide({ now, timeZone, source, settings, recoveryToday: row?.recovery?.value ?? null, lastSyncTs: sync.lastSyncTs, markers }),
       ...decideSmart({
