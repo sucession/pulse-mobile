@@ -306,7 +306,7 @@ export function coachTools(ctx: QueryCtx, t: Texts = defaultTexts) {
       execute: async () => {
         const p = ctx.profile;
         const age = Math.floor((Date.parse(todayOf(ctx)) - Date.parse(p.birthDate)) / (365.2425 * 86_400_000));
-        return { age, sex: p.sex, maxHr: p.maxHr, heightCm: p.heightCm, waistCm: p.waistCm ?? null, sleepGoalHours: p.sleepGoal?.hours ?? null, timeZone: ctx.timeZone, firstDayWithData: await firstDay(ctx), today: todayOf(ctx), weekAgo: addDays(todayOf(ctx), -7) };
+        return { age, sex: p.sex, maxHr: p.maxHr, timeZone: ctx.timeZone, firstDayWithData: await firstDay(ctx), today: todayOf(ctx), weekAgo: addDays(todayOf(ctx), -7) };
       },
     }),
     get_nutrition: tool({
