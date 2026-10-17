@@ -14,8 +14,8 @@ export const MARKERS_KEY = "pulse.notifications.markers";
 export const SOURCE_KEY = "pulse.source";
 
 // CONFIGURA AQUÍ TU URL Y KEY REALES DE SUPABASE:
-const SUPABASE_URL = "https://jhqoeqatzqtjmeqnmdqk.supabase.co";
-const SUPABASE_KEY = "sb_publishable_WKnq0UF_JvfYQwfrpQqdDw_VgiUZKEK";
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
+const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY ?? "";
 
 export async function readMarkers(): Promise<Markers> {
   try {
