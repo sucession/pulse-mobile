@@ -1,6 +1,6 @@
 name: Build Android APK
 on:
-  workflow_dispatch: # Te permite darle a un botón "Run workflow" en la web de GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -9,11 +9,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node & pnpm
+      - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'pnpm'
@@ -24,20 +26,25 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        run: pnpm typecheck
+
       - name: Prebuild Android native project
+        env:
+          CI: "1"
         run: npx expo prebuild --platform android --no-install
 
-      - name: Build Release APK (signed with debug key for easy install)
+      - name: Build APK
         working-directory: android
         run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: pulse-custom-apk
