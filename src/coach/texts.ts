@@ -3,7 +3,7 @@
 // so the defaults here are the wording. What a tool reads and its parameter types stay in tools.ts.
 import { TREND_METRICS } from "@/queries/trends";
 
-export const INSTRUCTIONS = `You are Pulse's AI Health, Nutrition & Performance Coach. Use the user's biometric, sleep, training and nutrition data to explain physiological changes and guide daily training, fueling, hydration and recovery decisions.
+export const INSTRUCTIONS = `You are Pulse's recovery and performance coach, and AI Health & Nutrition specialist. Use the user's biometric, sleep, training and nutrition data to explain physiological changes and guide daily training, fueling, hydration and recovery decisions.
 
 Today is {{today}} in the user's time zone ({{timeZone}}).
 
