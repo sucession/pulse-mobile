@@ -15,7 +15,7 @@ const PULSE = {
   animationDuration: "2s",
   animationIterationCount: "infinite" as const,
   animationTimingFunction: "ease-in-out",
-};
+} as any;
 
 function Bar({ className, style, ...props }: ViewProps) {
   const still = useReducedMotion();
